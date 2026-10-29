@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Editor Tests</title>
+<style>
+  :root { --bg: #f6f7f9; --panel: #fff; --border: #e1e4e8; --text: #1f2328; --muted: #656d76; --pass: #1a7f37; --fail: #d1242f; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8d96a0; --pass: #3fb950; --fail: #f85149; color-scheme: dark; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", "Sukhumvit Set", "Noto Sans Thai", sans-serif; display: flex; gap: 16px; padding: 16px; }
+  #report { flex: 1; min-width: 0; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  #summary { color: var(--muted); margin-bottom: 16px; }
+  #summary.done.ok { color: var(--pass); font-weight: 600; }
+  #summary.done.bad { color: var(--fail); font-weight: 600; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 20px 0 6px; }
+  .t { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 4px; }
+  .t .s { width: 18px; flex: none; font-weight: 700; }
+  .t.pass .s { color: var(--pass); }
+  .t.fail .s { color: var(--fail); }
+  .t .err { color: var(--fail); font: 12px ui-monospace, Menlo, monospace; white-space: pre-wrap; margin-top: 2px; }
+  .t .ms { margin-left: auto; color: var(--muted); font-size: 12px; flex: none; }
+  iframe { flex: none; width: 1200px; height: 700px; border: 1px solid var(--border); border-radius: 8px; background: #fff; transform: scale(.5); transform-origin: top right; margin-left: -600px; }
+</style>
+</head>
+<body>
+<div id="report">
+  <h1>Markdown Editor — Tests</h1>
+  <div id="summary">กำลังรัน…</div>
+  <div id="list"></div>
+</div>
+<iframe id="app"></iframe>
+
+<script>
+const APP = '../markdownReader.html';
+const frame = document.getElementById('app');
+let w; // app window
+let lastStep = '';
+const step = s => { lastStep = s; };
+
+/* ---------- Helpers ---------- */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const once = (el, ev) => new Promise(r => el.addEventListener(ev, r, { once: true }));
+
+async function waitFor(fn, msg = 'condition', ms = 3000) {
+  const start = Date.now();
+  for (;;) {
+    let v;
+    try { v = fn(); } catch {}
+    if (v) return v;
+    if (Date.now() - start > ms) throw new Error('รอนานเกินไป: ' + msg);
+    await sleep(20);
+  }
+}
+
+function eq(actual, expected, msg = '') {
+  if (actual !== expected) throw new Error(`${msg}\n  ได้:     ${JSON.stringify(actual)}\n  ควรเป็น: ${JSON.stringify(expected)}`);
+}
+function ok(cond, msg = 'assertion failed') { if (!cond) throw new Error(msg); }
+
+function clearStorage() {
+  for (const k of Object.keys(localStorage)) if (k.startsWith('mdr.')) localStorage.removeItem(k);
+}
+function clearIDB() {
+  // deleteDatabase can stay pending while an old connection closes; don't let it stall the suite
+  return new Promise(r => {
+    setTimeout(r, 500);
+    const q = indexedDB.deleteDatabase('mdr');
+    q.onsuccess = q.onerror = q.onblocked = () => r();
+  });
+}
+
+async function blank() {
+  frame.src = 'about:blank';
+  await once(frame, 'load');
+}
+
+// Load a fresh copy of the app. fresh=false keeps localStorage (simulates reopening the page).
+async function loadApp({ fresh = true, width = 1200, setup } = {}) {
+  step('blank'); await blank();
+  step('clear'); if (fresh) { clearStorage(); await clearIDB(); }
+  setup?.();
+  frame.style.width = width + 'px';
+  frame.style.marginLeft = -width / 2 + 'px';
+  step('load app'); frame.src = APP;
+  await once(frame, 'load');
+  w = frame.contentWindow;
+  step('wait active'); await waitFor(() => A('active'), 'แอปโหลดไม่เสร็จ');
+  step('test body');
+}
+
+// Load the app as a browser without the File System Access API would see it (Safari / Firefox)
+// Load the app into a blank frame after `prepare(window)` has run, so the page sees whatever it set up
+async function loadAppInjected(prepare, { fresh = true } = {}) {
+  await blank();
+  if (fresh) { clearStorage(); await clearIDB(); }
+  const html = await (await fetch(APP)).text();
+  const cw = frame.contentWindow;
+  prepare(cw);
+  cw.document.open();
+  cw.document.write(html.replace('<head>', `<head><base href="${new URL(APP, location)}">`));
+  cw.document.close();
+  w = cw;
+  await waitFor(() => A('active'), 'แอปโหลดไม่เสร็จ');
+}
+
+// Load the app as a browser without the File System Access API would see it (Safari / Firefox)
+function loadAppWithoutFS() {
+  return loadAppInjected(cw => {
+    delete cw.Window.prototype.showOpenFilePicker;
+    delete cw.Window.prototype.showSaveFilePicker;
+    delete cw.showOpenFilePicker;
+    delete cw.showSaveFilePicker;
+  });
+}
+
+// Stand-in for desktop/preload.js: files live in `files` keyed by absolute path
+function fakeDesktop(files = {}) {
+  const d = {
+    files, writes: [], on: {}, openAnswer: [], saveAnswer: null,
+    api: {
+      platform: 'darwin',
+      openDialog: async () => d.openAnswer,
+      saveDialog: async name => { d.suggested = name; return d.saveAnswer; },
+      readFile: async p => { if (!(p in d.files)) throw new Error('ENOENT ' + p); return d.files[p]; },
+      writeFile: async (p, text) => { d.files[p] = text; d.writes.push(p); },
+      pathForFile: f => f.fakePath || '',
+      onOpenPaths: cb => { d.on.open = cb; },
+      onMenu: cb => { d.on.menu = cb; },
+      onFlush: cb => { d.on.flush = cb; },
+    },
+  };
+  return d;
+}
+
+// Load the app as the Electron build sees it. contextBridge makes `desktop` a non-configurable global.
+function loadAppAsDesktop(d, opts) {
+  return loadAppInjected(cw => {
+    Object.defineProperty(cw, 'desktop', { value: d.api, enumerable: true, configurable: false, writable: false });
+  }, opts);
+}
+
+const A = expr => w.eval(expr);              // evaluate inside the app (reaches top-level let/const)
+const $a = s => w.document.querySelector(s);
+const $$a = s => [...w.document.querySelectorAll(s)];
+const ed = () => A('editor');
+
+function setText(s, caret = s.length) {
+  const t = ed();
+  t.value = s;
+  t.setSelectionRange(caret, caret);
+  t.dispatchEvent(new w.Event('input', { bubbles: true }));
+}
+const select = (a, b = a) => ed().setSelectionRange(a, b);
+const selected = () => ed().value.slice(ed().selectionStart, ed().selectionEnd);
+function key(target, opts) {
+  const e = new w.KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...opts });
+  target.dispatchEvent(e);
+  return e;
+}
+const tool = name => $a(`[data-fmt="${name}"]`).click();
+const rendered = () => A('renderNow()');
+const names = () => A('docs.map(d => d.name)').join(',');
+const status = () => A('active.status.msg');
+
+// Minimal stand-in for a FileSystemFileHandle
+function fakeHandle(name, content = '') {
+  return {
+    kind: 'file', name, content, writes: 0, perm: 'granted',
+    async getFile() { return new File([this.content], this.name); },
+    async queryPermission() { return this.perm; },
+    async requestPermission() { return this.perm; },
+    async createWritable() {
+      const h = this; let buf = '';
+      return { async write(d) { buf += d; }, async close() { h.content = buf; h.writes++; } };
+    },
+    async isSameEntry(o) { return o === this; },
+  };
+}
+
+/* ---------- Test registry ---------- */
+const tests = [];
+const test = (group, name, fn) => tests.push({ group, name, fn });
+
+/* ================= 1. Offline ================= */
+test('Offline', 'ไม่มีการอ้างอิง URL ภายนอก (CDN) ในไฟล์ HTML', async () => {
+  const html = await (await fetch(APP)).text();
+  const ext = html.match(/(src|href)\s*=\s*["']\s*(https?:)?\/\//gi) || [];
+  eq(ext.length, 0, 'พบ URL ภายนอก: ' + ext.join(', '));
+  ok(!/@import|url\(\s*["']?https?:/i.test(html), 'พบ CSS ที่โหลดจากภายนอก');
+});
+test('Offline', 'โหลด marked และ DOMPurify จากโฟลเดอร์ lib/ ได้', async () => {
+  await loadApp();
+  ok(typeof w.marked?.parse === 'function', 'ไม่พบ marked');
+  ok(typeof w.DOMPurify?.sanitize === 'function', 'ไม่พบ DOMPurify');
+  const res = w.performance.getEntriesByType('resource').map(r => r.name);
+  const foreign = res.filter(n => !n.startsWith(location.origin));
+  eq(foreign.length, 0, 'มีการโหลดจากภายนอก: ' + foreign.join(', '));
+});
+
+/* ================= 2. Preview ================= */
+test('Preview', 'แปลง Markdown: หัวข้อ ตัวหนา ตัวเอียง รายการ ตาราง เช็กลิสต์ บล็อกโค้ด', async () => {
+  await loadApp();
+  setText('# H1\n\n**b** *i*\n\n- a\n- b\n\n| x | y |\n|---|---|\n| 1 | 2 |\n\n- [x] done\n\n```js\nlet a\n```');
+  rendered();
+  eq($a('#out h1')?.textContent, 'H1', 'h1');
+  eq($a('#out strong')?.textContent, 'b', 'strong');
+  eq($a('#out em')?.textContent, 'i', 'em');
+  ok($$a('#out ul li').length >= 2, 'list');
+  eq($$a('#out table td').length, 2, 'table cells');
+  ok($a('#out input[type=checkbox][checked]'), 'task checkbox');
+  eq($a('#out pre code')?.textContent.trim(), 'let a', 'code block');
+});
+test('Preview', 'พรีวิวอัปเดตทันทีเมื่อพิมพ์', async () => {
+  await loadApp();
+  setText('# one');
+  await waitFor(() => $a('#out h1')?.textContent === 'one', 'พรีวิวไม่อัปเดต');
+  setText('# two');
+  await waitFor(() => $a('#out h1')?.textContent === 'two', 'พรีวิวไม่อัปเดตครั้งที่สอง');
+});
+test('Preview', 'กัน XSS: ตัด <script>, onerror และลิงก์ javascript:', async () => {
+  await loadApp();
+  setText('<img src=x onerror="window.__xss=1"><script>window.__xss=2<\/script>\n\n[bad](javascript:window.__xss=3)');
+  rendered();
+  ok(!$a('#out script'), 'ยังมี <script>');
+  ok(!$a('#out img')?.hasAttribute('onerror'), 'ยังมี onerror');
+  ok(!/^javascript:/i.test($a('#out a')?.getAttribute('href') || ''), 'ยังมีลิงก์ javascript:');
+  $a('#out a')?.click();
+  await sleep(100);
+  ok(!w.__xss, 'สคริปต์อันตรายถูกรัน');
+});
+test('Preview', 'ลิงก์ภายนอกเปิดแท็บใหม่ ลิงก์ #anchor ไม่เปิดแท็บใหม่', async () => {
+  await loadApp();
+  setText('[ext](https://example.com) [in](#sec)');
+  rendered();
+  const [ext, inner] = $$a('#out a');
+  eq(ext.target, '_blank', 'target');
+  ok(ext.rel.includes('noopener'), 'rel noopener');
+  eq(inner.target, '', 'anchor ไม่ควรมี target');
+});
+test('Preview', 'Syntax highlight: ระบายสีโค้ดตามภาษา และใช้ได้กับ bash, cuda, dockerfile, nginx', async () => {
+  await loadApp();
+  ok(typeof w.hljs?.highlight === 'function', 'ไม่พบ highlight.js');
+  setText('```js\nconst a = "x"; // note\n```\n\n```bash\necho hi\n```\n\n```cuda\n__global__ void k(int n) {}\n```\n\n```dockerfile\nFROM nginx\n```\n\n```nginx\nserver { listen 80; }\n```');
+  rendered();
+  const blocks = $$a('#out pre code');
+  eq(blocks.length, 5, 'จำนวนบล็อกโค้ด');
+  const js = blocks[0];
+  ok(js.classList.contains('hljs') && js.classList.contains('language-js'), 'class ของบล็อก js: ' + js.className);
+  eq(js.querySelector('.hljs-keyword')?.textContent, 'const', 'keyword');
+  eq(js.querySelector('.hljs-string')?.textContent, '"x"', 'string');
+  eq(js.querySelector('.hljs-comment')?.textContent, '// note', 'comment');
+  eq(js.textContent, 'const a = "x"; // note', 'ข้อความต้องไม่เปลี่ยน');
+  for (const [i, lang] of [[1, 'bash'], [2, 'cuda'], [3, 'dockerfile'], [4, 'nginx']]) {
+    ok(blocks[i].classList.contains('hljs') && blocks[i].querySelector('[class^="hljs-"]'), lang + ' ไม่ถูกระบายสี');
+  }
+  const kw = w.getComputedStyle(js.querySelector('.hljs-keyword')).color;
+  ok(kw !== w.getComputedStyle(js).color, 'keyword ควรมีสีต่างจากข้อความปกติ');
+});
+test('Preview', 'Syntax highlight: บล็อกไม่มีภาษาหรือภาษาที่ไม่รู้จัก แสดงเป็นข้อความธรรมดา', async () => {
+  await loadApp();
+  setText('```\nif (a < b) {}\n```\n\n```nosuchlang\n<b>x</b>\n```');
+  rendered();
+  const [plain, unknown] = $$a('#out pre code');
+  ok(!plain.classList.contains('hljs') && !plain.querySelector('span'), 'บล็อกไม่มีภาษาไม่ควรถูกระบายสี');
+  eq(plain.textContent, 'if (a < b) {}');
+  ok(unknown.classList.contains('language-nosuchlang'), 'ควรเก็บชื่อภาษาไว้ใน class');
+  eq(unknown.textContent, '<b>x</b>', 'HTML ในโค้ดต้องแสดงเป็นข้อความ');
+  ok(!unknown.querySelector('b'), 'HTML ในโค้ดไม่ควรถูกแปลงเป็น element');
+});
+test('Preview', 'Syntax highlight: โค้ดที่มี HTML/สคริปต์ ไม่ถูกรัน', async () => {
+  await loadApp();
+  setText('```html\n<img src=x onerror="window.__xss=1"><script>window.__xss=2<\/script>\n```\n\n```js\n"<img src=x onerror=window.__xss=3>"\n```');
+  rendered();
+  ok(!$a('#out img') && !$a('#out script'), 'ไม่ควรมี element จากโค้ด');
+  ok($a('#out pre code').textContent.includes('<script>'), 'ควรแสดงโค้ดเป็นข้อความ');
+  await sleep(100);
+  ok(!w.__xss, 'สคริปต์อันตรายถูกรัน');
+});
+test('Preview', 'เอกสารว่างแสดงข้อความแนะนำ', async () => {
+  await loadApp();
+  setText('   ');
+  rendered();
+  ok($a('#out .empty'), 'ไม่มีข้อความแนะนำ');
+});
+
+/* ================= 3. Status bar ================= */
+test('Status bar', 'นับคำภาษาไทย ตัวอักษร และบรรทัด', async () => {
+  await loadApp();
+  const text = 'สวัสดีครับ hello world\nบรรทัดสอง';
+  setText(text);
+  rendered();
+  const m = $a('#stats').textContent.match(/([\d,]+) คำ · ([\d,]+) ตัวอักษร · ([\d,]+) บรรทัด/);
+  ok(m, 'รูปแบบข้อความไม่ถูกต้อง: ' + $a('#stats').textContent);
+  const words = +m[1].replace(/,/g, '');
+  ok(words >= 5 && words <= 7, `นับคำได้ ${words} (ควรประมาณ 6: สวัสดี/ครับ/hello/world/บรรทัด/สอง)`);
+  eq(+m[2].replace(/,/g, ''), text.length, 'ตัวอักษร');
+  eq(+m[3], 2, 'บรรทัด');
+});
+
+/* ================= 4. Toolbar ================= */
+test('Toolbar', 'ตัวหนา: ครอบข้อความที่เลือก', async () => {
+  await loadApp();
+  setText('hello world'); select(0, 5);
+  tool('b');
+  eq(ed().value, '**hello** world');
+  eq(selected(), 'hello', 'ยังเลือกข้อความเดิมไว้');
+});
+test('Toolbar', 'ตัวหนา: ไม่ได้เลือกอะไร จะใส่ข้อความตัวอย่างและเลือกไว้', async () => {
+  await loadApp();
+  setText(''); tool('b');
+  eq(ed().value, '**ข้อความ**');
+  eq(selected(), 'ข้อความ');
+});
+test('Toolbar', 'ตัวเอียง และโค้ดในบรรทัด', async () => {
+  await loadApp();
+  setText('x'); select(0, 1); tool('i');
+  eq(ed().value, '*x*');
+  setText('y'); select(0, 1); tool('code');
+  eq(ed().value, '`y`');
+});
+test('Toolbar', 'โค้ดหลายบรรทัดกลายเป็นบล็อกโค้ด', async () => {
+  await loadApp();
+  setText('a\nb'); select(0, 3); tool('code');
+  eq(ed().value, '```\na\nb\n```');
+});
+test('Toolbar', 'ลิงก์: ใช้ข้อความที่เลือก และเลือก URL ไว้ให้พิมพ์ต่อ', async () => {
+  await loadApp();
+  setText('site'); select(0, 4); tool('link');
+  eq(ed().value, '[site](https://)');
+  eq(selected(), 'https://');
+});
+test('Toolbar', 'หัวข้อ / รายการ / เช็กลิสต์ / อ้างอิง: ใส่ทุกบรรทัดที่เลือก และกดซ้ำเพื่อเอาออก', async () => {
+  await loadApp();
+  for (const [fmt, p] of [['h', '## '], ['ul', '- '], ['task', '- [ ] '], ['quote', '> ']]) {
+    setText('a\nb'); select(0, 3);
+    tool(fmt);
+    eq(ed().value, `${p}a\n${p}b`, fmt + ' ใส่');
+    tool(fmt);
+    eq(ed().value, 'a\nb', fmt + ' เอาออก');
+  }
+});
+
+/* ================= 5. Keyboard ================= */
+test('Keyboard', 'Ctrl/⌘ + B, I, K', async () => {
+  await loadApp();
+  setText('t'); select(0, 1); key(ed(), { key: 'b', ctrlKey: true });
+  eq(ed().value, '**t**', 'Ctrl+B');
+  setText('t'); select(0, 1); key(ed(), { key: 'i', metaKey: true });
+  eq(ed().value, '*t*', '⌘+I');
+  setText('t'); select(0, 1); key(ed(), { key: 'k', ctrlKey: true });
+  eq(ed().value, '[t](https://)', 'Ctrl+K');
+});
+test('Keyboard', 'Tab ย่อหน้า / Shift+Tab ถอยย่อหน้า (หลายบรรทัด)', async () => {
+  await loadApp();
+  setText('abc'); select(0);
+  const e = key(ed(), { key: 'Tab' });
+  ok(e.defaultPrevented, 'Tab ไม่ควรย้ายโฟกัสออกจาก editor');
+  eq(ed().value, '  abc', 'Tab');
+  setText('a\nb'); select(0, 3); key(ed(), { key: 'Tab' });
+  eq(ed().value, '  a\n  b', 'Tab หลายบรรทัด');
+  select(0, ed().value.length); key(ed(), { key: 'Tab', shiftKey: true });
+  eq(ed().value, 'a\nb', 'Shift+Tab');
+});
+test('Keyboard', 'Enter ต่อรายการ: -, ตัวเลข, เช็กลิสต์', async () => {
+  await loadApp();
+  setText('- item'); key(ed(), { key: 'Enter' });
+  eq(ed().value, '- item\n- ', 'bullet');
+  setText('1. one'); key(ed(), { key: 'Enter' });
+  eq(ed().value, '1. one\n2. ', 'numbered');
+  setText('- [x] done'); key(ed(), { key: 'Enter' });
+  eq(ed().value, '- [x] done\n- [ ] ', 'task (ข้อใหม่ต้องยังไม่ติ๊ก)');
+  setText('  - nested'); key(ed(), { key: 'Enter' });
+  eq(ed().value, '  - nested\n  - ', 'รักษาการย่อหน้า');
+});
+test('Keyboard', 'Enter บนรายการว่าง = จบรายการ', async () => {
+  await loadApp();
+  setText('- item\n- '); key(ed(), { key: 'Enter' });
+  eq(ed().value, '- item\n');
+});
+test('Keyboard', 'Enter ปกติ และ Enter ระหว่างใช้ระบบพิมพ์ (IME) ไม่ถูกดัก', async () => {
+  await loadApp();
+  setText('plain');
+  ok(!key(ed(), { key: 'Enter' }).defaultPrevented, 'Enter ปกติถูกดัก');
+  setText('- ก');
+  ok(!key(ed(), { key: 'Enter', isComposing: true }).defaultPrevented, 'Enter ระหว่าง IME ถูกดัก');
+});
+
+/* ================= 6. Autosave ================= */
+test('Autosave', 'บันทึกลง localStorage อัตโนมัติหลังหยุดพิมพ์', async () => {
+  await loadApp();
+  setText('autosave test');
+  eq(status(), 'กำลังบันทึก…', 'สถานะระหว่างรอ');
+  ok($a('.tab.active.dirty'), 'แท็บควรขึ้นจุด (ยังไม่ได้บันทึกลงไฟล์)');
+  const id = A('active.id');
+  await waitFor(() => localStorage.getItem('mdr.doc.' + id) === 'autosave test', 'ไม่ถูกบันทึกลง localStorage');
+  eq(status(), 'บันทึกในเบราว์เซอร์แล้ว');
+});
+test('Autosave', 'เปิดหน้าใหม่แล้วแท็บ เนื้อหา และแท็บที่เปิดอยู่กลับมาครบ', async () => {
+  await loadApp();
+  setText('first doc');
+  A('newDoc()');
+  setText('second doc');
+  A('switchTo(docs[0])');
+  await waitFor(() => A('docs.every(d => !d.saveTimer)'), 'autosave ไม่เสร็จ');
+  await loadApp({ fresh: false });
+  eq(names(), 'welcome.md,untitled.md', 'แท็บ');
+  eq(A('docs[0].ta.value'), 'first doc');
+  eq(A('docs[1].ta.value'), 'second doc');
+  eq(A('active.name'), 'welcome.md', 'แท็บที่เปิดอยู่');
+});
+test('Autosave', 'ข้อมูลใน localStorage เสียหาย แอปยังเปิดได้', async () => {
+  await loadApp({ setup: () => localStorage.setItem('mdr.tabs', '{not json') });
+  eq(A('docs.length'), 1);
+});
+test('Autosave', 'ย้ายข้อมูลจากเวอร์ชันไฟล์เดียว (mdr.text / mdr.name)', async () => {
+  await loadApp({ setup: () => { localStorage.setItem('mdr.text', 'legacy body'); localStorage.setItem('mdr.name', 'old.md'); } });
+  eq(names(), 'old.md');
+  eq(ed().value, 'legacy body');
+  eq(localStorage.getItem('mdr.text'), null, 'ควรลบ key เก่า');
+});
+
+/* ================= 7. Tabs ================= */
+test('Tabs', 'สร้างแท็บใหม่ ตั้งชื่อไม่ซ้ำ และแสดง editor ทีละแท็บ', async () => {
+  await loadApp();
+  A('newDoc()'); A('newDoc()');
+  eq(names(), 'welcome.md,untitled.md,untitled-2.md');
+  eq(A('active.name'), 'untitled-2.md');
+  eq($$a('textarea.editor').filter(t => !t.hidden).length, 1, 'textarea ที่มองเห็น');
+  eq($$a('.tab').length, 3, 'จำนวนแท็บบนแถบ');
+  eq($a('.tab.active .tab-name').textContent, 'untitled-2.md');
+});
+test('Tabs', 'สลับแท็บแล้วเนื้อหา ตำแหน่ง cursor และพรีวิวถูกต้อง', async () => {
+  await loadApp();
+  setText('# AAA'); select(2, 3);
+  A('newDoc()'); setText('# BBB');
+  A('switchTo(docs[0])');
+  eq(ed().value, '# AAA');
+  eq(ed().selectionStart, 2, 'cursor');
+  eq($a('#out h1').textContent, 'AAA', 'พรีวิว');
+  ok(A('docs[0].ta !== docs[1].ta'), 'แต่ละแท็บควรมี textarea แยก (undo แยกกัน)');
+});
+test('Tabs', 'คลิกแท็บเพื่อสลับ / คลิกปุ่มกลางเพื่อปิด', async () => {
+  await loadApp();
+  A('newDoc()');
+  $$a('.tab')[0].click();
+  eq(A('active.name'), 'welcome.md', 'คลิกแท็บ');
+  $$a('.tab')[1].dispatchEvent(new w.MouseEvent('auxclick', { button: 1, bubbles: true }));
+  await waitFor(() => A('docs.length') === 1, 'คลิกปุ่มกลางไม่ปิดแท็บ');
+});
+test('Tabs', 'ปิดแท็บ: ไม่ถามถ้าไม่มีการแก้ไข / ถามถ้ายังไม่ได้บันทึก', async () => {
+  await loadApp();
+  let asked = 0, answer = false;
+  w.confirm = () => { asked++; return answer; };
+  A('newDoc()');
+  await A('closeDoc(active)');
+  eq(asked, 0, 'แท็บที่ไม่ได้แก้ไขไม่ควรถาม');
+  A('newDoc()'); setText('draft');
+  const id = A('active.id');
+  await A('closeDoc(active)');
+  eq(asked, 1, 'ควรถามยืนยัน');
+  eq(A('docs.length'), 2, 'กดยกเลิก แท็บต้องยังอยู่');
+  answer = true;
+  await A('closeDoc(active)');
+  eq(A('docs.length'), 1, 'กดตกลง แท็บต้องถูกปิด');
+  eq(localStorage.getItem('mdr.doc.' + id), null, 'ข้อมูลของแท็บควรถูกลบ');
+});
+test('Tabs', 'ปิดแท็บสุดท้ายแล้วได้แท็บว่างใหม่', async () => {
+  await loadApp();
+  await A('closeDoc(active)');
+  eq(A('docs.length'), 1);
+  eq(ed().value, '');
+  eq(A('active.name'), 'untitled.md');
+});
+test('Tabs', 'ปุ่ม + และปุ่ม "ใหม่" สร้างแท็บ', async () => {
+  await loadApp();
+  $a('.tab-add').click();
+  $a('#newBtn').click();
+  eq(A('docs.length'), 3);
+});
+test('Tabs', 'คีย์ลัด Alt+N / Alt+← → / Alt+W', async () => {
+  await loadApp();
+  const doc = w.document;
+  ok(key(doc, { code: 'KeyN', key: '˜', altKey: true }).defaultPrevented, 'Alt+N');
+  eq(A('docs.length'), 2);
+  key(doc, { code: 'ArrowLeft', altKey: true });
+  eq(A('active.name'), 'welcome.md', 'Alt+←');
+  key(doc, { code: 'ArrowRight', altKey: true });
+  eq(A('active.name'), 'untitled.md', 'Alt+→');
+  key(doc, { code: 'ArrowRight', altKey: true });
+  eq(A('active.name'), 'welcome.md', 'Alt+→ วนกลับแท็บแรก');
+  key(doc, { code: 'KeyW', altKey: true });
+  await waitFor(() => A('docs.length') === 1, 'Alt+W ไม่ปิดแท็บ');
+});
+test('Tabs', 'เปิดไฟล์ทับแท็บว่างที่มีอยู่ ไม่สร้างแท็บว่างค้าง', async () => {
+  await loadApp();
+  setText('');
+  await A(`openDocs([{ text: '# A', name: 'a.md' }])`);
+  eq(names(), 'a.md');
+  await A(`openDocs([{ text: '# B', name: 'b.md' }, { text: '# C', name: 'c.md' }])`);
+  eq(names(), 'a.md,b.md,c.md');
+  eq(A('active.name'), 'c.md', 'ไฟล์สุดท้ายเป็นแท็บที่เปิดอยู่');
+  eq($a('#out h1').textContent, 'C');
+});
+
+/* ================= 8. Files (Chrome / Edge) ================= */
+test('Files', 'เปิดหลายไฟล์จากตัวเลือกไฟล์ และเชื่อมกับไฟล์', async () => {
+  await loadApp();
+  const h1 = fakeHandle('one.md', '# One'), h2 = fakeHandle('two.md', '# Two');
+  w.showOpenFilePicker = async opts => { ok(opts.multiple, 'ควรเลือกได้หลายไฟล์'); return [h1, h2]; };
+  await A('openFile()');
+  eq(names(), 'welcome.md,one.md,two.md');
+  eq(A('active.name'), 'two.md');
+  eq($a('#out h1').textContent, 'Two');
+  ok(status().includes('เชื่อมกับไฟล์'), 'สถานะ: ' + status());
+});
+test('Files', 'เปิดไฟล์เดิมซ้ำ จะสลับไปแท็บเดิมแทนการเปิดใหม่', async () => {
+  await loadApp();
+  const h1 = fakeHandle('one.md', '# One');
+  w.showOpenFilePicker = async () => [h1];
+  await A('openFile()');
+  A('newDoc()');
+  await A('openFile()');
+  eq(names(), 'welcome.md,one.md,untitled.md');
+  eq(A('active.name'), 'one.md');
+});
+test('Files', 'แก้ไขแล้วเขียนลงไฟล์จริงอัตโนมัติ', async () => {
+  await loadApp();
+  const h = fakeHandle('one.md', '# One');
+  w.showOpenFilePicker = async () => [h];
+  await A('openFile()');
+  setText('# One edited');
+  await waitFor(() => h.content === '# One edited', 'ไม่ได้เขียนลงไฟล์');
+  ok(!A('active.dirty'), 'ควรล้างสถานะยังไม่บันทึก');
+  ok(status().startsWith('บันทึกลงไฟล์แล้ว'), 'สถานะ: ' + status());
+  ok(!$a('.tab.active.dirty'), 'จุดบนแท็บควรหายไป');
+});
+test('Files', 'บันทึกเป็นไฟล์ใหม่ (Save As) แล้วบันทึกอัตโนมัติต่อ', async () => {
+  await loadApp();
+  const h = fakeHandle('saved.md');
+  let suggested;
+  w.showSaveFilePicker = async opts => { suggested = opts.suggestedName; return h; };
+  setText('new content');
+  await A('saveFile()');
+  eq(suggested, 'welcome.md', 'ชื่อไฟล์ที่เสนอ');
+  eq(h.content, 'new content');
+  eq(A('active.name'), 'saved.md', 'ชื่อแท็บเปลี่ยนตามไฟล์');
+  setText('more');
+  await waitFor(() => h.content === 'more', 'ไม่บันทึกอัตโนมัติหลัง Save As');
+});
+test('Files', 'ไม่ได้รับสิทธิ์เขียนไฟล์: เก็บในเบราว์เซอร์ + แสดงปุ่มขอสิทธิ์', async () => {
+  await loadApp();
+  const h = fakeHandle('one.md', 'x');
+  h.perm = 'denied';
+  w.showOpenFilePicker = async () => [h];
+  await A('openFile()');
+  ok($a('#permBtn').classList.contains('show'), 'ควรแสดงปุ่มขอสิทธิ์ทันทีที่เปิด');
+  setText('pending');
+  const id = A('active.id');
+  await waitFor(() => localStorage.getItem('mdr.doc.' + id) === 'pending', 'ไม่เก็บในเบราว์เซอร์');
+  eq(h.writes, 0, 'ไม่ควรเขียนไฟล์');
+  h.perm = 'granted';
+  $a('#permBtn').click();
+  await waitFor(() => h.content === 'pending', 'กดปุ่มแล้วไม่เขียนไฟล์');
+  ok(!$a('#permBtn').classList.contains('show'), 'ปุ่มควรหายไป');
+});
+test('Files', 'Ctrl/⌘+S บันทึก และ Ctrl/⌘+O เปิดไฟล์', async () => {
+  await loadApp();
+  const h = fakeHandle('one.md', 'x');
+  let opened = 0;
+  w.showOpenFilePicker = async () => { opened++; return [h]; };
+  ok(key(w.document, { key: 'o', ctrlKey: true }).defaultPrevented, 'Ctrl+O');
+  await waitFor(() => A('active.name') === 'one.md', 'Ctrl+O ไม่เปิดไฟล์');
+  const before = h.writes;
+  ok(key(w.document, { key: 's', metaKey: true }).defaultPrevented, '⌘+S');
+  await waitFor(() => h.writes === before + 1, '⌘+S ไม่บันทึก');
+});
+test('Files', 'ปิดแท็บที่เชื่อมไฟล์ระหว่างรอ autosave จะบันทึกก่อนปิด', async () => {
+  await loadApp();
+  const h = fakeHandle('one.md', 'x');
+  w.showOpenFilePicker = async () => [h];
+  let asked = 0;
+  w.confirm = () => { asked++; return true; };
+  await A('openFile()');
+  setText('last words');
+  await A('closeDoc(active)');
+  eq(h.content, 'last words');
+  eq(asked, 0, 'ไม่ควรถามยืนยัน');
+});
+test('Files', 'เปลี่ยนชื่อเอกสาร (เติม .md ให้, Esc ยกเลิก, แยกจากไฟล์เดิม)', async () => {
+  await loadApp();
+  const name = $a('#docName');
+  name.textContent = 'notes';
+  name.dispatchEvent(new w.Event('blur'));
+  eq(A('active.name'), 'notes.md', 'เติม .md');
+  eq($a('.tab.active .tab-name').textContent, 'notes.md', 'ชื่อบนแท็บ');
+  name.textContent = 'oops';
+  key(name, { key: 'Escape' });
+  name.dispatchEvent(new w.Event('blur'));
+  eq(A('active.name'), 'notes.md', 'Esc ยกเลิก');
+  const h = fakeHandle('linked.md', 'y');
+  w.showOpenFilePicker = async () => [h];
+  await A('openFile()');
+  name.textContent = 'renamed.md';
+  name.dispatchEvent(new w.Event('blur'));
+  eq(A('active.handle'), null, 'ควรแยกจากไฟล์เดิม');
+  ok(status().includes('เปลี่ยนชื่อ'), 'สถานะ: ' + status());
+});
+
+/* ================= 9. Safari / Firefox fallback ================= */
+test('Fallback', 'ไม่มี File System API: ปุ่มบันทึกดาวน์โหลดไฟล์', async () => {
+  await loadAppWithoutFS();
+  eq(A('canFS'), false, 'ควรตรวจเจอว่าไม่มี API');
+  let blob, download;
+  w.URL.createObjectURL = b => { blob = b; return 'blob:test'; };
+  w.HTMLAnchorElement.prototype.click = function () { download = this.download; };
+  setText('download me');
+  await A('saveFile()');
+  eq(download, 'welcome.md', 'ชื่อไฟล์');
+  eq(await blob.text(), 'download me', 'เนื้อหา');
+  ok(!A('active.dirty'), 'ควรล้างสถานะยังไม่บันทึก');
+});
+test('Fallback', 'ไม่มี File System API: เปิดไฟล์ผ่าน <input type=file> ได้หลายไฟล์', async () => {
+  await loadAppWithoutFS();
+  const input = $a('#fileInput');
+  let clicked = 0;
+  input.click = () => clicked++;
+  await A('openFile()');
+  eq(clicked, 1, 'ควรเปิดหน้าต่างเลือกไฟล์');
+  ok(input.multiple, 'ควรเลือกได้หลายไฟล์');
+  const dt = new w.DataTransfer();
+  dt.items.add(new w.File(['# F1'], 'f1.md'));
+  dt.items.add(new w.File(['# F2'], 'f2.md'));
+  input.files = dt.files;
+  input.dispatchEvent(new w.Event('change'));
+  await waitFor(() => names() === 'welcome.md,f1.md,f2.md', 'ไม่ได้เปิดไฟล์: ' + names());
+});
+
+/* ================= 10. Desktop app (Electron) ================= */
+test('Desktop', 'แอปโหลดได้เมื่อมี window.desktop แบบเดียวกับ contextBridge', async () => {
+  const d = fakeDesktop();
+  await loadAppAsDesktop(d);
+  eq(A('canFS'), true, 'canFS');
+  ok(d.on.open && d.on.menu && d.on.flush, 'ควรลงทะเบียน listener กับ main process');
+});
+test('Desktop', 'เปิดไฟล์ผ่านหน้าต่างของระบบ อ่านด้วย path และเชื่อมกับไฟล์', async () => {
+  const d = fakeDesktop({ '/docs/a.md': '# A', '/docs/b.md': '# B' });
+  d.openAnswer = ['/docs/a.md', '/docs/b.md'];
+  await loadAppAsDesktop(d);
+  await A('openFile()');
+  eq(names(), 'welcome.md,a.md,b.md');
+  eq($a('#out h1').textContent, 'B');
+  ok(status().includes('เชื่อมกับไฟล์'), 'สถานะ: ' + status());
+  ok(!$a('#permBtn').classList.contains('show'), 'ไม่ควรต้องขอสิทธิ์');
+  d.openAnswer = ['/docs/a.md'];
+  await A('openFile()');
+  eq(A('docs.length'), 3, 'เปิดไฟล์เดิมซ้ำไม่ควรเพิ่มแท็บ');
+  eq(A('active.name'), 'a.md');
+});
+test('Desktop', 'พิมพ์แล้วบันทึกลงไฟล์อัตโนมัติ', async () => {
+  const d = fakeDesktop({ '/docs/a.md': '# A' });
+  d.openAnswer = ['/docs/a.md'];
+  await loadAppAsDesktop(d);
+  await A('openFile()');
+  setText('# edited');
+  await waitFor(() => d.files['/docs/a.md'] === '# edited', 'ไม่ได้เขียนไฟล์');
+  ok(status().startsWith('บันทึกลงไฟล์แล้ว'), 'สถานะ: ' + status());
+});
+test('Desktop', 'Save As: เลือกที่เก็บ / กดยกเลิกแล้วไม่มี error', async () => {
+  const d = fakeDesktop();
+  await loadAppAsDesktop(d);
+  setText('fresh');
+  let toasts = 0;
+  const t = $a('#toast');
+  new w.MutationObserver(() => toasts++).observe(t, { childList: true, characterData: true, subtree: true });
+  d.saveAnswer = null;
+  await A('saveFile()');
+  eq(A('active.handle'), null, 'ยกเลิกแล้วไม่ควรเชื่อมไฟล์');
+  eq(toasts, 0, 'ยกเลิกแล้วไม่ควรแจ้ง error');
+  d.saveAnswer = '/docs/new.md';
+  await A('saveFile()');
+  eq(d.suggested, 'welcome.md', 'ชื่อที่เสนอ');
+  eq(d.files['/docs/new.md'], 'fresh');
+  eq(A('active.name'), 'new.md');
+});
+test('Desktop', 'เปิดแอปใหม่แล้วแท็บยังเชื่อมกับไฟล์เดิม (เก็บเป็น path)', async () => {
+  const d = fakeDesktop({ '/docs/a.md': '# A' });
+  d.openAnswer = ['/docs/a.md'];
+  await loadAppAsDesktop(d);
+  await A('openFile()');
+  await sleep(200);   // handle is persisted to IndexedDB in the background
+  await loadAppAsDesktop(d, { fresh: false });
+  await waitFor(() => A('docs.find(x => x.name === "a.md")?.handle?.desktopPath') === '/docs/a.md', 'ไม่ได้เชื่อมไฟล์คืน');
+  A('switchTo(docs.find(x => x.name === "a.md"))');
+  setText('# after restart');
+  await waitFor(() => d.files['/docs/a.md'] === '# after restart', 'ไม่ได้เขียนไฟล์หลังเปิดใหม่');
+});
+test('Desktop', 'ไฟล์ที่เปิดจาก Finder/Explorer และไฟล์ที่ลากมาวาง เชื่อมกับไฟล์', async () => {
+  const d = fakeDesktop({ '/docs/os.md': '# OS', '/docs/drop.md': '# Drop' });
+  await loadAppAsDesktop(d);
+  await d.on.open(['/docs/os.md', '/docs/missing.md']);
+  eq(names(), 'welcome.md,os.md', 'ไฟล์ที่ไม่มีอยู่ควรถูกข้าม');
+  eq(A('active.handle.desktopPath'), '/docs/os.md');
+  const dt = new w.DataTransfer();
+  const f = new w.File(['# Drop'], 'drop.md');
+  dt.items.add(f);
+  d.api.pathForFile = file => file.name === 'drop.md' ? '/docs/drop.md' : '';
+  w.document.body.dispatchEvent(new w.DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  await waitFor(() => A('active.name') === 'drop.md', 'ไม่ได้เปิดไฟล์ที่ลากมา');
+  eq(A('active.handle.desktopPath'), '/docs/drop.md');
+});
+test('Desktop', 'เมนูของแอป: แท็บใหม่ / แท็บถัดไป / ปิดแท็บ', async () => {
+  const d = fakeDesktop();
+  await loadAppAsDesktop(d);
+  d.on.menu('new');
+  eq(A('docs.length'), 2);
+  d.on.menu('next');
+  eq(A('active.name'), 'welcome.md', 'next วนกลับแท็บแรก');
+  d.on.menu('prev');
+  eq(A('active.name'), 'untitled.md', 'prev');
+  d.on.menu('close');
+  await waitFor(() => A('docs.length') === 1, 'close ไม่ปิดแท็บ');
+});
+test('Desktop', 'ก่อนปิดหน้าต่าง บันทึกงานที่ค้างอยู่ทันที', async () => {
+  const d = fakeDesktop({ '/docs/a.md': '# A' });
+  d.openAnswer = ['/docs/a.md'];
+  await loadAppAsDesktop(d);
+  await A('openFile()');
+  setText('# pending');
+  eq(d.files['/docs/a.md'], '# A', 'ยังไม่ควรบันทึกก่อนครบเวลา');
+  await d.on.flush();
+  eq(d.files['/docs/a.md'], '# pending', 'flush ต้องเขียนไฟล์ทันที');
+});
+
+/* ================= 11. Drag & drop ================= */
+test('Drag & drop', 'ลากไฟล์มาวาง: แสดงกรอบ และเปิดเป็นแท็บ', async () => {
+  await loadApp();
+  const dt = new w.DataTransfer();
+  dt.items.add(new w.File(['# D1'], 'd1.md'));
+  dt.items.add(new w.File(['# D2'], 'd2.md'));
+  const fire = type => w.document.body.dispatchEvent(new w.DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+  fire('dragenter');
+  ok(w.document.body.classList.contains('dragging'), 'ควรแสดงกรอบวางไฟล์');
+  fire('dragleave');
+  ok(!w.document.body.classList.contains('dragging'), 'กรอบควรหายเมื่อลากออก');
+  fire('dragenter');
+  fire('drop');
+  ok(!w.document.body.classList.contains('dragging'), 'กรอบควรหายหลังวาง');
+  await waitFor(() => names() === 'welcome.md,d1.md,d2.md', 'ไม่ได้เปิดไฟล์: ' + names());
+  eq($a('#out h1').textContent, 'D2');
+});
+
+/* ================= 12. Layout ================= */
+test('Layout', 'โหมด แก้ไข / แบ่งจอ / พรีวิว แสดงพื้นที่ถูกต้อง', async () => {
+  await loadApp();
+  const width = s => $a(s).getBoundingClientRect().width;
+  const mainW = width('main');
+  for (const btn of $$a('.seg button')) {
+    btn.click();
+    const v = btn.dataset.view;
+    eq(btn.getAttribute('aria-pressed'), 'true', v + ' ปุ่มถูกเลือก');
+    const e = width('.pane.editor'), p = width('.pane.preview');
+    if (v === 'edit') ok(e > mainW - 40 && p === 0, `แก้ไข: editor=${e} preview=${p}`);
+    if (v === 'preview') ok(p > mainW - 40 && e === 0, `พรีวิว: editor=${e} preview=${p} (เคยเป็นพื้นที่โล่ง)`);
+    if (v === 'split') ok(e > 300 && p > 300, `แบ่งจอ: editor=${e} preview=${p}`);
+    eq(localStorage.getItem('mdr.view'), v, 'จำโหมดไว้');
+  }
+});
+test('Layout', 'ปรับขนาดแบ่งจอ: จำกัด 20–80% และดับเบิลคลิกรีเซ็ต', async () => {
+  await loadApp();
+  const split = () => w.document.documentElement.style.getPropertyValue('--split');
+  A('setSplit(5)');
+  eq(split(), '20%', 'ต่ำสุด');
+  A('setSplit(95)');
+  eq(split(), '80%', 'สูงสุด');
+  eq(localStorage.getItem('mdr.split'), '80', 'จำค่าไว้');
+  $a('#divider').dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
+  eq(split(), '50%', 'ดับเบิลคลิก');
+});
+test('Layout', 'สลับธีม และจำไว้หลังเปิดใหม่', async () => {
+  await loadApp();
+  const theme = () => w.document.documentElement.dataset.theme;
+  $a('#themeBtn').click();
+  const first = theme();
+  ok(first === 'dark' || first === 'light', 'ควรตั้งธีม');
+  $a('#themeBtn').click();
+  ok(theme() !== first, 'กดอีกครั้งควรสลับ');
+  await loadApp({ fresh: false });
+  ok(theme() !== first, 'ธีมควรถูกจำไว้');
+  const bg = w.getComputedStyle(w.document.body).backgroundColor;
+  ok(bg && bg !== 'rgba(0, 0, 0, 0)', 'body ควรมีสีพื้นหลัง');
+});
+test('Layout', 'จอมือถือ (420px): ไม่ล้นแนวนอน และแบ่งจอเป็นบน/ล่าง', async () => {
+  await loadApp({ width: 420 });
+  const de = w.document.documentElement;
+  ok(de.scrollWidth <= de.clientWidth + 1, `เนื้อหาล้น: ${de.scrollWidth} > ${de.clientWidth}`);
+  const e = $a('.pane.editor').getBoundingClientRect(), p = $a('.pane.preview').getBoundingClientRect();
+  ok(e.bottom <= p.top + 1, 'editor ควรอยู่บน preview');
+  ok(p.height > 100 && e.height > 100, `ความสูง editor=${e.height} preview=${p.height}`);
+});
+
+/* ---------- Runner ---------- */
+(async () => {
+  const list = document.getElementById('list');
+  const plain = [];
+  let pass = 0, fail = 0, group = null;
+  const only = new URLSearchParams(location.search).get('only');
+  for (const t of tests.filter(t => !only || t.name.includes(only) || t.group === only)) {
+    if (t.group !== group) {
+      group = t.group;
+      list.insertAdjacentHTML('beforeend', `<h2>${group}</h2>`);
+      plain.push(`\n[${group}]`);
+    }
+    const row = document.createElement('div');
+    row.className = 't';
+    const start = performance.now();
+    let err = null;
+    try {
+      await Promise.race([t.fn(), sleep(15000).then(() => { throw new Error('test timeout (15s) ค้างที่: ' + lastStep); })]);
+    } catch (e) { err = e; }
+    const ms = Math.round(performance.now() - start);
+    row.classList.add(err ? 'fail' : 'pass');
+    row.innerHTML = `<span class="s">${err ? '✗' : '✓'}</span><div><div class="n"></div>${err ? '<div class="err"></div>' : ''}</div><span class="ms">${ms} ms</span>`;
+    row.querySelector('.n').textContent = t.name;
+    if (err) row.querySelector('.err').textContent = err.message;
+    list.append(row);
+    err ? fail++ : pass++;
+    plain.push(`${err ? 'FAIL' : 'PASS'}  ${t.name}${err ? '\n        ' + err.message.replace(/\n/g, '\n        ') : ''}`);
+  }
+  await blank();
+  clearStorage();
+  const s = document.getElementById('summary');
+  s.textContent = `ผ่าน ${pass} / ${tests.length}` + (fail ? ` · ไม่ผ่าน ${fail}` : ' — ทั้งหมดผ่าน');
+  s.className = 'done ' + (fail ? 'bad' : 'ok');
+  plain.push(`\nRESULT ${pass}/${tests.length} passed, ${fail} failed`);
+  // Plain-text report for tests/run.sh (ignored when the page is opened by hand)
+  fetch('/__report', { method: 'POST', body: plain.join('\n') }).catch(() => {});
+  document.title = `DONE ${pass}/${tests.length}`;
+})();
+</script>
+</body>
+</html>

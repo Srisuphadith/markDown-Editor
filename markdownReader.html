@@ -1,0 +1,1219 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Editor</title>
+<script src="lib/marked.min.js"></script>
+<script src="lib/purify.min.js"></script>
+<script src="lib/highlight.min.js"></script>
+<script src="lib/hljs-dockerfile.min.js"></script>
+<script src="lib/hljs-nginx.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --border: #e1e4e8;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #2563eb;
+    --accent-soft: #e8efff;
+    --ok: #1a7f37;
+    --warn: #b35900;
+    --code-bg: #f3f4f6;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Sukhumvit Set", "Thonburi", "Leelawadee UI", "Noto Sans Thai", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono", monospace;
+    --split: 50%;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --panel: #161b22; --panel-2: #1c2129; --border: #30363d;
+      --text: #e6edf3; --muted: #8d96a0; --accent: #4c8dff; --accent-soft: #1b2a45;
+      --ok: #3fb950; --warn: #d29922; --code-bg: #1f2630;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2129; --border: #30363d;
+    --text: #e6edf3; --muted: #8d96a0; --accent: #4c8dff; --accent-soft: #1b2a45;
+    --ok: #3fb950; --warn: #d29922; --code-bg: #1f2630;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 var(--font-ui);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  button { font: inherit; color: inherit; }
+
+  /* ---------- Top bar ---------- */
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--panel);
+    border-bottom: 1px solid var(--border); min-height: 52px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+  .logo {
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    background: var(--accent); color: #fff; display: grid; place-items: center;
+    font-weight: 700; font-size: 13px; letter-spacing: -.5px;
+  }
+  .doc { min-width: 0; }
+  .doc-name {
+    font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid transparent; border-radius: 6px; padding: 1px 6px; margin-left: -7px;
+    outline: none; max-width: 40vw; display: block;
+  }
+  .doc-name:hover { border-color: var(--border); }
+  .doc-name:focus { border-color: var(--accent); background: var(--panel-2); }
+  .doc-sub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; transition: background .2s; }
+  .dot.saving { background: var(--warn); }
+  .dot.local { background: var(--muted); }
+  .dot.error { background: #d1242f; }
+  .perm-btn {
+    display: none; border: 0; background: var(--accent-soft); color: var(--accent);
+    border-radius: 999px; padding: 0 8px; font-size: 12px; cursor: pointer;
+  }
+  .perm-btn.show { display: inline-block; }
+
+  .actions { display: flex; align-items: center; gap: 6px; flex: none; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
+    border: 1px solid var(--border); background: var(--panel); border-radius: 8px;
+    cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s;
+  }
+  .btn:hover { background: var(--panel-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn svg { width: 16px; height: 16px; flex: none; }
+  .btn.icon { padding: 0; width: 32px; justify-content: center; }
+
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    border: 0; background: var(--panel); height: 30px; padding: 0 10px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; color: var(--muted);
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+  .seg svg { width: 16px; height: 16px; }
+
+  /* ---------- Workspace ---------- */
+  main {
+    flex: 1; min-height: 0; display: grid;
+    grid-template-columns: var(--split) 6px 1fr;
+    padding: 8px 12px 12px; gap: 0;
+  }
+  body[data-view="edit"] main, body[data-view="preview"] main { grid-template-columns: minmax(0, 1fr); }
+  body[data-view="edit"] .pane.preview, body[data-view="preview"] .pane.editor,
+  body[data-view="edit"] .divider, body[data-view="preview"] .divider { display: none; }
+
+  .pane {
+    min-width: 0; min-height: 0; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .pane-head {
+    display: flex; align-items: center; gap: 4px; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); background: var(--panel); min-height: 42px;
+  }
+  .pane-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 0 6px; margin-right: auto; }
+  .tool {
+    border: 0; background: transparent; width: 30px; height: 30px; border-radius: 6px;
+    cursor: pointer; color: var(--muted); display: grid; place-items: center;
+  }
+  .tool:hover { background: var(--panel-2); color: var(--text); }
+  .tool svg { width: 16px; height: 16px; }
+  .tool-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+
+  #editors { flex: 1; min-height: 0; display: flex; }
+  textarea.editor {
+    flex: 1; width: 100%; resize: none; border: 0; outline: none;
+    padding: 20px 24px 40vh; background: var(--panel); color: var(--text);
+    font: 14px/1.7 var(--font-mono); tab-size: 2;
+  }
+  textarea.editor[hidden] { display: none; }
+  textarea.editor::placeholder { color: var(--muted); }
+
+  /* ---------- Tabs ---------- */
+  .tabbar {
+    display: flex; align-items: center; gap: 4px; padding: 8px 12px 0;
+    overflow-x: auto; scrollbar-width: thin; flex: none;
+  }
+  .tab {
+    display: flex; align-items: center; gap: 4px; flex: none; max-width: 220px;
+    height: 32px; padding: 0 4px 0 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent; color: var(--muted); user-select: none;
+  }
+  .tab:hover { background: var(--panel-2); color: var(--text); }
+  .tab.active { background: var(--panel); border-color: var(--border); color: var(--text); box-shadow: var(--shadow); }
+  .tab-icon { width: 14px; height: 14px; flex: none; opacity: .7; }
+  .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab-close {
+    position: relative; width: 22px; height: 22px; flex: none; border: 0; border-radius: 5px;
+    background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center;
+  }
+  .tab-close svg { width: 12px; height: 12px; }
+  .tab:not(.active):not(:hover) .tab-close svg { visibility: hidden; }
+  .tab-close:hover { background: var(--border); color: var(--text); }
+  /* Unsaved: show a dot in place of × until hovered */
+  .tab.dirty:not(:hover) .tab-close svg { visibility: hidden; }
+  .tab.dirty:not(:hover) .tab-close::after {
+    content: ""; position: absolute; inset: 0; margin: auto; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--text); opacity: .6;
+  }
+  .tab-add {
+    flex: none; width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent;
+    color: var(--muted); cursor: pointer; display: grid; place-items: center;
+  }
+  .tab-add:hover { background: var(--panel-2); color: var(--text); }
+  .tab-add svg { width: 16px; height: 16px; }
+
+  .divider { cursor: col-resize; position: relative; }
+  .divider::after {
+    content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 36px;
+    transform: translate(-50%, -50%); border-radius: 4px; background: var(--border); transition: background .15s;
+  }
+  .divider:hover::after, body.resizing .divider::after { background: var(--accent); }
+  body.resizing { cursor: col-resize; user-select: none; }
+
+  #preview { flex: 1; overflow: auto; padding: 24px 32px 40vh; }
+
+  /* ---------- Markdown typography ---------- */
+  .md { max-width: 780px; margin: 0 auto; font-size: 15.5px; line-height: 1.75; word-wrap: break-word; }
+  .md > :first-child { margin-top: 0; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { line-height: 1.3; margin: 1.6em 0 .6em; font-weight: 650; }
+  .md h1 { font-size: 2em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  .md h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  .md h3 { font-size: 1.25em; }
+  .md h4 { font-size: 1.05em; }
+  .md h6 { color: var(--muted); }
+  .md p, .md ul, .md ol, .md blockquote, .md pre, .md table { margin: 0 0 1em; }
+  .md ul, .md ol { padding-left: 1.6em; }
+  .md li + li { margin-top: .25em; }
+  .md li > input[type=checkbox] { margin: 0 .4em 0 -1.3em; vertical-align: middle; }
+  .md li:has(> input[type=checkbox]) { list-style: none; }
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+  .md code {
+    font-family: var(--font-mono); font-size: .88em; background: var(--code-bg);
+    padding: .15em .4em; border-radius: 5px;
+  }
+  .md pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; overflow: auto; line-height: 1.55;
+  }
+  .md pre code { background: none; padding: 0; font-size: .86em; }
+
+  /* ---------- Syntax highlighting (highlight.js classes) ---------- */
+  :root {
+    --sx-keyword: #cf222e; --sx-string: #0a3069; --sx-comment: #6e7781; --sx-number: #0550ae;
+    --sx-title: #8250df; --sx-builtin: #953800; --sx-tag: #116329;
+    --sx-add: #116329; --sx-add-bg: #dafbe1; --sx-del: #82071e; --sx-del-bg: #ffebe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --sx-keyword: #ff7b72; --sx-string: #a5d6ff; --sx-comment: #8b949e; --sx-number: #79c0ff;
+      --sx-title: #d2a8ff; --sx-builtin: #ffa657; --sx-tag: #7ee787;
+      --sx-add: #aff5b4; --sx-add-bg: rgba(46,160,67,.15); --sx-del: #ffdcd7; --sx-del-bg: rgba(248,81,73,.15);
+    }
+  }
+  :root[data-theme="dark"] {
+    --sx-keyword: #ff7b72; --sx-string: #a5d6ff; --sx-comment: #8b949e; --sx-number: #79c0ff;
+    --sx-title: #d2a8ff; --sx-builtin: #ffa657; --sx-tag: #7ee787;
+    --sx-add: #aff5b4; --sx-add-bg: rgba(46,160,67,.15); --sx-del: #ffdcd7; --sx-del-bg: rgba(248,81,73,.15);
+  }
+  .hljs-keyword, .hljs-doctag, .hljs-template-tag, .hljs-type, .hljs-meta .hljs-keyword { color: var(--sx-keyword); }
+  .hljs-string, .hljs-regexp, .hljs-meta .hljs-string { color: var(--sx-string); }
+  .hljs-comment, .hljs-quote { color: var(--sx-comment); font-style: italic; }
+  .hljs-number, .hljs-literal, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable,
+  .hljs-selector-attr, .hljs-selector-class, .hljs-selector-id, .hljs-property, .hljs-operator { color: var(--sx-number); }
+  .hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section { color: var(--sx-title); }
+  .hljs-built_in, .hljs-symbol, .hljs-params, .hljs-meta { color: var(--sx-builtin); }
+  .hljs-name, .hljs-tag, .hljs-selector-tag, .hljs-selector-pseudo, .hljs-bullet { color: var(--sx-tag); }
+  .hljs-section { font-weight: 600; }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong { font-weight: 700; }
+  .hljs-addition { color: var(--sx-add); background: var(--sx-add-bg); }
+  .hljs-deletion { color: var(--sx-del); background: var(--sx-del-bg); }
+  .md blockquote {
+    margin-left: 0; padding: .2em 1em; color: var(--muted);
+    border-left: 4px solid var(--border);
+  }
+  .md hr { border: 0; height: 1px; background: var(--border); margin: 2em 0; }
+  .md img { max-width: 100%; border-radius: 8px; }
+  .md table { border-collapse: collapse; display: block; overflow: auto; max-width: 100%; }
+  .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; }
+  .md th { background: var(--panel-2); font-weight: 600; }
+  .md tr:nth-child(even) td { background: color-mix(in srgb, var(--panel-2) 50%, transparent); }
+  .empty { color: var(--muted); text-align: center; margin-top: 18vh; }
+  .empty b { display: block; font-size: 16px; color: var(--text); margin-bottom: 4px; }
+
+  /* ---------- Status bar ---------- */
+  footer {
+    display: flex; gap: 16px; align-items: center; padding: 0 16px 8px;
+    font-size: 12px; color: var(--muted);
+  }
+  footer .spacer { flex: 1; }
+  kbd {
+    font: 11px var(--font-mono); padding: 1px 5px; border-radius: 4px;
+    border: 1px solid var(--border); background: var(--panel);
+  }
+
+  /* ---------- Drop overlay & toast ---------- */
+  .drop {
+    position: fixed; inset: 0; display: none; place-items: center; z-index: 10;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 3px dashed var(--accent); border-radius: 16px; margin: 8px;
+    font-size: 18px; font-weight: 600; color: var(--accent); pointer-events: none;
+  }
+  body.dragging .drop { display: grid; }
+  .toast {
+    position: fixed; left: 50%; bottom: 40px; transform: translate(-50%, 20px);
+    background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px;
+    opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 11;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- Small screens ---------- */
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; padding: 8px 16px; }
+    .btn .label, .seg .label, .hide-sm { display: none; }
+    main { padding: 8px; }
+    main, body[data-view] main { grid-template-columns: minmax(0, 1fr); }
+    body[data-view="split"] main { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+    .actions { flex-wrap: wrap; }
+    body[data-view="split"] .divider { display: none; }
+    #preview { padding: 16px; }
+    textarea.editor { padding: 16px; }
+    .tabbar { padding: 8px 8px 0; }
+    footer { padding: 0 16px 8px; }
+  }
+</style>
+</head>
+<body data-view="split">
+
+<header>
+  <div class="brand">
+    <div class="logo">MD</div>
+    <div class="doc">
+      <span class="doc-name" id="docName" contenteditable="plaintext-only" spellcheck="false" title="คลิกเพื่อเปลี่ยนชื่อ">untitled.md</span>
+      <div class="doc-sub">
+        <span class="dot" id="dot"></span>
+        <span id="saveText">บันทึกแล้ว</span>
+        <button class="perm-btn" id="permBtn">อนุญาตให้บันทึกลงไฟล์</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <div class="seg" role="group" aria-label="มุมมอง">
+      <button data-view="edit" title="แก้ไขอย่างเดียว">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <span class="label">แก้ไข</span>
+      </button>
+      <button data-view="split" title="แบ่งครึ่ง">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>
+        <span class="label">แบ่งจอ</span>
+      </button>
+      <button data-view="preview" title="ดูอย่างเดียว">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="label">พรีวิว</span>
+      </button>
+    </div>
+
+    <button class="btn" id="newBtn" title="แท็บใหม่ (Alt+N)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+      <span class="label">ใหม่</span>
+    </button>
+    <button class="btn" id="openBtn" title="เปิดไฟล์ (⌘/Ctrl+O)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+      <span class="label">เปิด</span>
+    </button>
+    <button class="btn primary" id="saveBtn" title="บันทึกเป็นไฟล์ (⌘/Ctrl+S)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      <span class="label">บันทึก</span>
+    </button>
+    <button class="btn icon" id="themeBtn" title="สลับธีม">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="tabbar" id="tabs" role="tablist" aria-label="ไฟล์ที่เปิดอยู่"></nav>
+
+<main>
+  <section class="pane editor">
+    <div class="pane-head">
+      <span class="pane-title">Markdown</span>
+      <button class="tool" data-fmt="h" title="หัวข้อ">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 4v16M18 4v16M6 12h12"/></svg>
+      </button>
+      <button class="tool" data-fmt="b" title="ตัวหนา (⌘/Ctrl+B)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h6a4 4 0 0 1 0 8H7Z"/><path d="M7 12h7a4 4 0 0 1 0 8H7Z"/></svg>
+      </button>
+      <button class="tool" data-fmt="i" title="ตัวเอียง (⌘/Ctrl+I)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 4h-9M14 20H5M15 4 9 20"/></svg>
+      </button>
+      <button class="tool" data-fmt="code" title="โค้ด">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></svg>
+      </button>
+      <button class="tool" data-fmt="link" title="ลิงก์ (⌘/Ctrl+K)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      </button>
+      <span class="tool-sep"></span>
+      <button class="tool" data-fmt="ul" title="รายการ">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg>
+      </button>
+      <button class="tool" data-fmt="task" title="เช็กลิสต์">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><path d="m4.5 7.5 1.5 1.5 2.5-3M14 7.5h7M3 17h7M14 17h7"/></svg>
+      </button>
+      <button class="tool" data-fmt="quote" title="ข้อความอ้างอิง">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 5v14M9 8h11M9 12h11M9 16h7"/></svg>
+      </button>
+    </div>
+    <div id="editors"></div>
+  </section>
+
+  <div class="divider" id="divider" title="ลากเพื่อปรับขนาด · ดับเบิลคลิกเพื่อรีเซ็ต"></div>
+
+  <section class="pane preview">
+    <div class="pane-head">
+      <span class="pane-title">Preview</span>
+    </div>
+    <div id="preview"><article class="md" id="out"></article></div>
+  </section>
+</main>
+
+<footer>
+  <span id="stats">0 คำ · 0 ตัวอักษร · 1 บรรทัด</span>
+  <span class="spacer"></span>
+  <span class="hide-sm">ลากไฟล์ .md มาวางได้ · <kbd>⌘/Ctrl</kbd> + <kbd>S</kbd> บันทึก</span>
+</footer>
+
+<div class="drop">วางไฟล์ Markdown ที่นี่</div>
+<div class="toast" id="toast"></div>
+<input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown" hidden>
+
+<script>
+const $ = s => document.querySelector(s);
+const out = $('#out'), previewBox = $('#preview'), editorsBox = $('#editors'), tabsEl = $('#tabs');
+const docName = $('#docName'), dot = $('#dot'), saveText = $('#saveText'), permBtn = $('#permBtn');
+
+const KEY = {
+  tabs: 'mdr.tabs', active: 'mdr.active', doc: id => 'mdr.doc.' + id,
+  view: 'mdr.view', split: 'mdr.split', theme: 'mdr.theme',
+  legacyText: 'mdr.text', legacyName: 'mdr.name',
+};
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+// Desktop app (Electron): the preload script exposes `window.desktop`, and files are reached by path
+// (named `bridge` because contextBridge's global `desktop` can't be redeclared)
+const bridge = window.desktop || null;
+const canFS = !!bridge || 'showOpenFilePicker' in window;
+const FILE_TYPES = [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.txt'] } }];
+const RW = { mode: 'readwrite' };
+
+// Mimics the parts of FileSystemFileHandle this app uses, backed by a file path on the desktop
+function desktopHandle(path) {
+  return {
+    kind: 'file', desktopPath: path, name: path.split(/[\\/]/).pop(),
+    async queryPermission() { return 'granted'; },
+    async requestPermission() { return 'granted'; },
+    async getFile() { return new File([await bridge.readFile(path)], this.name); },
+    async createWritable() {
+      let buf = '';
+      return { async write(d) { buf += d; }, async close() { await bridge.writeFile(path, buf); } };
+    },
+    async isSameEntry(other) { return other?.desktopPath === path; },
+  };
+}
+// IndexedDB can't store the object above, so desktop handles are saved as their path
+const handleToStore = h => h.desktopPath ? { desktopPath: h.desktopPath } : h;
+const handleFromStore = v => v?.desktopPath ? (bridge ? desktopHandle(v.desktopPath) : null) : v;
+
+function pickOpenHandles() {
+  if (!bridge) return showOpenFilePicker({ types: FILE_TYPES, multiple: true });
+  return bridge.openDialog().then(paths => paths.map(desktopHandle));
+}
+async function pickSaveHandle(suggestedName) {
+  if (!bridge) return showSaveFilePicker({ suggestedName, types: FILE_TYPES });
+  const path = await bridge.saveDialog(suggestedName);
+  if (!path) throw new DOMException('Save cancelled', 'AbortError');
+  return desktopHandle(path);
+}
+
+const WELCOME = `# ยินดีต้อนรับสู่ Markdown Editor ✍️
+
+แก้ไขทางซ้าย ดูผลทางขวา — ทุกอย่างทำงาน **offline** ในเครื่องคุณ
+
+## เริ่มต้นใช้งาน
+
+- กด **เปิด** หรือ **ลากไฟล์ .md มาวาง** บนหน้านี้ (เลือกได้หลายไฟล์ แต่ละไฟล์จะเปิดเป็นแท็บ)
+- กด **+** บนแถบแท็บ หรือ \`Alt + N\` เพื่อสร้างเอกสารใหม่
+- พิมพ์ได้เลย ระบบจะ *บันทึกอัตโนมัติ*
+- กด **บันทึก** (\`⌘/Ctrl + S\`) เพื่อเลือกไฟล์ปลายทาง
+
+> บน Chrome / Edge เมื่อเปิดหรือบันทึกเป็นไฟล์แล้ว ทุกการแก้ไขจะถูกเขียนลงไฟล์นั้นอัตโนมัติ
+> บนเบราว์เซอร์อื่น งานจะถูกเก็บไว้ในเบราว์เซอร์ และกดบันทึกเพื่อดาวน์โหลดไฟล์
+
+## คีย์ลัด
+
+| คีย์ลัด | การทำงาน |
+|---|---|
+| \`⌘/Ctrl + B\` | ตัวหนา |
+| \`⌘/Ctrl + I\` | ตัวเอียง |
+| \`⌘/Ctrl + K\` | ลิงก์ |
+| \`Tab\` | ย่อหน้า |
+| \`Alt + N\` | แท็บใหม่ |
+| \`Alt + W\` | ปิดแท็บ |
+| \`Alt + ←/→\` | สลับแท็บ |
+
+- [x] แก้ไข + พรีวิวแบบเรียลไทม์
+- [x] ใช้งาน offline
+- [x] เปิดหลายไฟล์เป็นแท็บ
+- [ ] เขียนเอกสารของคุณ
+
+\`\`\`bash
+nvcc -ccbin g++-10 -O3 file.cu -o app
+\`\`\`
+`;
+
+/* ---------- Markdown rendering ---------- */
+marked.setOptions({ gfm: true, breaks: false });
+
+// Syntax highlighting for fenced code blocks with a language (```js). Blocks without one stay plain.
+hljs.registerAliases(['cuda', 'cu', 'cuh'], { languageName: 'cpp' });
+const escapeHtml = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const highlightCache = new Map();   // re-rendering on every keystroke would re-highlight unchanged blocks
+marked.use({
+  renderer: {
+    code({ text, lang }) {
+      const name = (lang || '').trim().split(/\s+/)[0].toLowerCase();
+      const known = name && hljs.getLanguage(name);
+      if (!known) {
+        const cls = name ? ` class="language-${escapeHtml(name)}"` : '';
+        return `<pre><code${cls}>${escapeHtml(text)}</code></pre>\n`;
+      }
+      const key = name + '\u0000' + text;
+      let html = highlightCache.get(key);
+      if (html === undefined) {
+        html = hljs.highlight(text, { language: name, ignoreIllegals: true }).value;
+        if (highlightCache.size > 300) highlightCache.clear();
+        highlightCache.set(key, html);
+      }
+      return `<pre><code class="hljs language-${escapeHtml(name)}">${html}</code></pre>\n`;
+    },
+  },
+});
+DOMPurify.addHook('afterSanitizeAttributes', node => {
+  if (node.tagName === 'A' && node.getAttribute('href') && !node.getAttribute('href').startsWith('#')) {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  }
+});
+
+let renderQueued = false;
+function render() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderNow(); });
+}
+function renderNow() {
+  const text = editor.value;
+  out.innerHTML = text.trim()
+    ? DOMPurify.sanitize(marked.parse(text))
+    : '<div class="empty"><b>ยังไม่มีเนื้อหา</b>พิมพ์ทางซ้าย หรือลากไฟล์ .md มาวาง</div>';
+  updateStats(text);
+}
+
+// Intl.Segmenter splits Thai (no spaces between words) into real words
+const segmenter = window.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
+function countWords(text) {
+  if (!segmenter) return (text.match(/[\p{L}\p{N}_'-]+/gu) || []).length;
+  let n = 0;
+  for (const s of segmenter.segment(text)) if (s.isWordLike) n++;
+  return n;
+}
+
+function updateStats(text) {
+  const words = countWords(text);
+  const lines = text ? text.split('\n').length : 1;
+  $('#stats').textContent = `${words.toLocaleString()} คำ · ${text.length.toLocaleString()} ตัวอักษร · ${lines.toLocaleString()} บรรทัด`;
+}
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+/* ---------- File handle persistence (IndexedDB) ---------- */
+const idb = {
+  db: null,
+  open() {
+    if (this.db) return this.db;
+    return this.db = new Promise((res, rej) => {
+      const r = indexedDB.open('mdr', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async run(mode, fn) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', mode);
+      const req = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => res(req.result);
+      tx.onerror = () => rej(tx.error);
+    });
+  },
+  get(k) { return this.run('readonly', s => s.get(k)).catch(() => null); },
+  set(k, v) { return this.run('readwrite', s => s.put(v, k)).catch(() => {}); },
+  del(k) { return this.run('readwrite', s => s.delete(k)).catch(() => {}); },
+};
+
+/* ---------- Documents (one per tab) ---------- */
+// doc = { id, name, handle, ta, dirty, needPerm, status, previewScroll, saveTimer }
+//   dirty: has changes that are not on disk yet
+let docs = [];
+let active = null;
+let editor = null;   // active doc's textarea
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+function createDoc({ id = uid(), name, text = '', handle = null } = {}) {
+  const ta = document.createElement('textarea');
+  ta.className = 'editor';
+  ta.spellcheck = false;
+  ta.placeholder = 'เริ่มพิมพ์ Markdown ที่นี่…';
+  ta.hidden = true;
+  ta.value = text;
+  editorsBox.append(ta);
+  const doc = {
+    id, name: name || uniqueName(), handle, ta, dirty: false, needPerm: false,
+    status: { state: 'local', msg: 'บันทึกในเบราว์เซอร์แล้ว' }, previewScroll: 0, saveTimer: null,
+  };
+  ta.doc = doc;
+  docs.push(doc);
+  store.set(KEY.doc(id), text);
+  return doc;
+}
+
+function uniqueName(base = 'untitled') {
+  const names = new Set(docs.map(d => d.name));
+  if (!names.has(base + '.md')) return base + '.md';
+  for (let i = 2; ; i++) if (!names.has(`${base}-${i}.md`)) return `${base}-${i}.md`;
+}
+
+function persistTabs() {
+  store.set(KEY.tabs, JSON.stringify(docs.map(d => ({ id: d.id, name: d.name }))));
+  if (active) store.set(KEY.active, active.id);
+}
+
+function setHandle(doc, h) {
+  doc.handle = h;
+  // Persisting the handle is best-effort; never block the UI on IndexedDB
+  if (h) idb.set('handle:' + doc.id, handleToStore(h)); else idb.del('handle:' + doc.id);
+}
+
+const isBlank = doc => !doc.handle && !doc.ta.value.trim();
+
+function switchTo(doc) {
+  if (active === doc) return;
+  if (active) {
+    active.previewScroll = previewBox.scrollTop;
+    active.ta.hidden = true;
+  }
+  active = doc;
+  editor = doc.ta;
+  editor.hidden = false;
+  showName();
+  renderNow();
+  previewBox.scrollTop = doc.previewScroll;
+  paintStatus();
+  renderTabs();
+  persistTabs();
+  editor.focus({ preventScroll: true });
+}
+
+function showName() {
+  docName.textContent = active.name;
+  document.title = `${active.name} — Markdown Editor`;
+}
+
+/* ---------- Tab bar ---------- */
+const FILE_ICON = '<svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/></svg>';
+const CLOSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const PLUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+
+function renderTabs() {
+  tabsEl.textContent = '';
+  for (const doc of docs) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (doc === active ? ' active' : '') + (doc.dirty ? ' dirty' : '');
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', doc === active);
+    tab.title = doc.handle ? `${doc.name} · เชื่อมกับไฟล์` : `${doc.name} · เก็บในเบราว์เซอร์`;
+    tab.innerHTML = FILE_ICON + '<span class="tab-name"></span>';
+    tab.querySelector('.tab-name').textContent = doc.name;
+    const close = document.createElement('button');
+    close.className = 'tab-close';
+    close.title = 'ปิดแท็บ (Alt+W)';
+    close.innerHTML = CLOSE_ICON;
+    close.onclick = e => { e.stopPropagation(); closeDoc(doc); };
+    tab.append(close);
+    tab.onclick = () => switchTo(doc);
+    tab.onauxclick = e => { if (e.button === 1) { e.preventDefault(); closeDoc(doc); } };
+    tabsEl.append(tab);
+    if (doc === active) requestAnimationFrame(() => tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+  const add = document.createElement('button');
+  add.className = 'tab-add';
+  add.title = 'แท็บใหม่ (Alt+N)';
+  add.innerHTML = PLUS_ICON;
+  add.onclick = newDoc;
+  tabsEl.append(add);
+}
+
+function markDirty(doc, dirty) {
+  if (doc.dirty === dirty) return;
+  doc.dirty = dirty;
+  renderTabs();
+}
+
+/* ---------- Save status ---------- */
+function setStatus(doc, state, msg) {
+  doc.status = { state, msg };
+  if (doc === active) paintStatus();
+}
+function paintStatus() {
+  const { state, msg } = active.status;
+  dot.className = 'dot' + (state === 'ok' ? '' : ' ' + state);
+  saveText.textContent = msg;
+  permBtn.classList.toggle('show', !!active.needPerm);
+}
+
+/* ---------- Autosave ---------- */
+function scheduleSave(doc) {
+  markDirty(doc, true);
+  setStatus(doc, 'saving', 'กำลังบันทึก…');
+  clearTimeout(doc.saveTimer);
+  doc.saveTimer = setTimeout(() => autosave(doc), 600);
+}
+
+async function autosave(doc) {
+  doc.saveTimer = null;
+  if (!docs.includes(doc)) return;
+  const ok = store.set(KEY.doc(doc.id), doc.ta.value);
+  if (!doc.handle) {
+    setStatus(doc, ok ? 'local' : 'error', ok ? 'บันทึกในเบราว์เซอร์แล้ว' : 'บันทึกไม่สำเร็จ (พื้นที่เต็ม?)');
+    return;
+  }
+  await writeFile(doc);
+}
+
+async function hasWritePermission(handle, request = false) {
+  if ((await handle.queryPermission(RW)) === 'granted') return true;
+  if (request) return (await handle.requestPermission(RW)) === 'granted';
+  return false;
+}
+
+async function writeFile(doc, request = false) {
+  try {
+    if (!(await hasWritePermission(doc.handle, request))) {
+      doc.needPerm = true;
+      setStatus(doc, 'local', 'บันทึกในเบราว์เซอร์แล้ว ·');
+      return false;
+    }
+    doc.needPerm = false;
+    const w = await doc.handle.createWritable();
+    await w.write(doc.ta.value);
+    await w.close();
+    markDirty(doc, false);
+    const t = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    setStatus(doc, 'ok', `บันทึกลงไฟล์แล้ว · ${t}`);
+    return true;
+  } catch (err) {
+    console.error(err);
+    setStatus(doc, 'error', 'เขียนไฟล์ไม่สำเร็จ — ข้อมูลยังอยู่ในเบราว์เซอร์');
+    return false;
+  }
+}
+
+permBtn.onclick = () => writeFile(active, true);
+
+/* ---------- Open / Save / New / Close ---------- */
+// files: [{ text, name, handle }]
+async function openDocs(files) {
+  let last = null;
+  for (const f of files) {
+    if (f.handle) {
+      let existing = null;
+      for (const d of docs) if (d.handle && await d.handle.isSameEntry(f.handle)) { existing = d; break; }
+      if (existing) { last = existing; continue; }
+    }
+    // Reuse an empty untitled tab instead of piling up blank ones
+    const blank = docs.length === 1 && isBlank(docs[0]) && !last ? docs[0] : null;
+    let doc;
+    if (blank) {
+      doc = blank;
+      doc.ta.value = f.text;
+      doc.name = f.name;
+      doc.dirty = false;
+      store.set(KEY.doc(doc.id), f.text);
+      if (doc === active) { active = null; doc.ta.hidden = true; } // force switchTo to refresh
+    } else {
+      doc = createDoc({ name: f.name, text: f.text });
+    }
+    setHandle(doc, f.handle || null);
+    if (f.handle) {
+      doc.needPerm = (await f.handle.queryPermission(RW)) !== 'granted';
+      setStatus(doc, doc.needPerm ? 'local' : 'ok', doc.needPerm ? 'บันทึกในเบราว์เซอร์แล้ว ·' : 'เชื่อมกับไฟล์ · บันทึกอัตโนมัติ');
+    } else {
+      setStatus(doc, 'local', 'บันทึกในเบราว์เซอร์แล้ว');
+    }
+    doc.ta.setSelectionRange(0, 0);
+    doc.ta.scrollTop = 0;
+    doc.previewScroll = 0;
+    last = doc;
+  }
+  if (last) {
+    switchTo(last);
+    renderTabs();
+    persistTabs();
+    toast(files.length > 1 ? `เปิด ${files.length} ไฟล์แล้ว` : `เปิด ${files[0].name} แล้ว`);
+  }
+}
+
+async function openFile() {
+  if (!canFS) return $('#fileInput').click();
+  try {
+    const handles = await pickOpenHandles();
+    const files = [];
+    for (const h of handles) {
+      const file = await h.getFile();
+      files.push({ text: await file.text(), name: file.name, handle: h });
+    }
+    // Ask for write access up front so autosave can write straight to the files
+    for (const f of files) { try { await f.handle.requestPermission(RW); } catch {} }
+    await openDocs(files);
+  } catch (err) {
+    if (err.name !== 'AbortError') { console.error(err); toast('เปิดไฟล์ไม่สำเร็จ'); }
+  }
+}
+
+$('#fileInput').multiple = true;
+$('#fileInput').onchange = async e => {
+  const list = [...e.target.files];
+  e.target.value = '';
+  if (!list.length) return;
+  await openDocs(await Promise.all(list.map(async f => ({ text: await f.text(), name: f.name }))));
+};
+
+async function saveFile() {
+  const doc = active;
+  clearTimeout(doc.saveTimer);
+  store.set(KEY.doc(doc.id), doc.ta.value);
+  if (doc.handle) {
+    if (await writeFile(doc, true)) toast('บันทึกแล้ว');
+    return;
+  }
+  const name = ensureExt(doc.name);
+  if (canFS) {
+    try {
+      const h = await pickSaveHandle(name);
+      setHandle(doc, h);
+      doc.name = h.name;
+      if (doc === active) showName();
+      persistTabs();
+      renderTabs();
+      if (await writeFile(doc, true)) toast(`บันทึกเป็น ${h.name} แล้ว · ต่อจากนี้บันทึกอัตโนมัติ`);
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('บันทึกไม่สำเร็จ');
+    }
+    return;
+  }
+  // Fallback: download a copy
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([doc.ta.value], { type: 'text/markdown;charset=utf-8' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  markDirty(doc, false);
+  setStatus(doc, 'local', 'บันทึกในเบราว์เซอร์แล้ว');
+  toast(`ดาวน์โหลด ${name} แล้ว`);
+}
+
+function ensureExt(name) {
+  name = (name || '').trim() || 'untitled.md';
+  return /\.(md|markdown|txt)$/i.test(name) ? name : name + '.md';
+}
+
+function newDoc() {
+  const doc = createDoc();
+  switchTo(doc);
+}
+
+async function closeDoc(doc) {
+  if (doc.dirty && doc.ta.value.trim()) {
+    if (doc.handle) {
+      // Linked file: flush pending autosave instead of asking
+      clearTimeout(doc.saveTimer);
+      if (!(await writeFile(doc, true)) &&
+          !confirm(`บันทึก "${doc.name}" ลงไฟล์ไม่สำเร็จ\nต้องการปิดแท็บโดยไม่บันทึกหรือไม่?`)) return;
+    } else if (!confirm(`"${doc.name}" ยังไม่ได้บันทึกเป็นไฟล์\nต้องการปิดแท็บนี้หรือไม่? (เนื้อหาจะหายไป)`)) {
+      return;
+    }
+  }
+  clearTimeout(doc.saveTimer);
+  const i = docs.indexOf(doc);
+  docs.splice(i, 1);
+  doc.ta.remove();
+  store.del(KEY.doc(doc.id));
+  idb.del('handle:' + doc.id);
+  if (doc === active) {
+    active = null;
+    switchTo(docs[Math.min(i, docs.length - 1)] || createDoc());
+  } else {
+    renderTabs();
+    persistTabs();
+  }
+}
+
+$('#openBtn').onclick = openFile;
+$('#saveBtn').onclick = saveFile;
+$('#newBtn').onclick = newDoc;
+
+/* ---------- Rename ---------- */
+docName.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); docName.blur(); }
+  if (e.key === 'Escape') { docName.textContent = active.name; docName.blur(); }
+});
+docName.addEventListener('blur', () => {
+  const doc = active;
+  const name = ensureExt(docName.textContent);
+  if (name === doc.name) { showName(); return; }
+  if (doc.handle && name !== doc.handle.name) {
+    // Renaming detaches from the current file; next save asks where to write
+    setHandle(doc, null);
+    doc.needPerm = false;
+    markDirty(doc, true);
+    setStatus(doc, 'local', 'เปลี่ยนชื่อแล้ว · กดบันทึกเพื่อสร้างไฟล์ใหม่');
+  }
+  doc.name = name;
+  showName();
+  renderTabs();
+  persistTabs();
+});
+
+/* ---------- Editing helpers ---------- */
+function insert(text) {
+  editor.focus();
+  if (!document.execCommand('insertText', false, text)) {
+    editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
+function wrap(before, after = before, placeholder = 'ข้อความ') {
+  const { selectionStart: s, selectionEnd: e, value } = editor;
+  const sel = value.slice(s, e) || placeholder;
+  insert(before + sel + after);
+  editor.setSelectionRange(s + before.length, s + before.length + sel.length);
+}
+
+function prefixLines(prefix) {
+  const { value } = editor;
+  let s = value.lastIndexOf('\n', editor.selectionStart - 1) + 1;
+  let e = value.indexOf('\n', editor.selectionEnd);
+  if (e === -1) e = value.length;
+  const lines = value.slice(s, e).split('\n');
+  const all = lines.every(l => l.startsWith(prefix));
+  const next = lines.map(l => all ? l.slice(prefix.length) : prefix + l).join('\n');
+  editor.setSelectionRange(s, e);
+  insert(next);
+  editor.setSelectionRange(s, s + next.length);
+}
+
+const formats = {
+  b: () => wrap('**'),
+  i: () => wrap('*'),
+  code: () => editor.value.slice(editor.selectionStart, editor.selectionEnd).includes('\n')
+    ? wrap('```\n', '\n```', 'code')
+    : wrap('`', '`', 'code'),
+  link: () => {
+    const { selectionStart: s, selectionEnd: e, value } = editor;
+    const label = value.slice(s, e) || 'ข้อความลิงก์';
+    insert(`[${label}](https://)`);
+    const urlStart = s + label.length + 3;
+    editor.setSelectionRange(urlStart, urlStart + 8);
+  },
+  h: () => prefixLines('## '),
+  ul: () => prefixLines('- '),
+  task: () => prefixLines('- [ ] '),
+  quote: () => prefixLines('> '),
+};
+
+document.querySelectorAll('[data-fmt]').forEach(b => {
+  b.addEventListener('mousedown', e => e.preventDefault()); // keep editor selection
+  b.addEventListener('click', () => formats[b.dataset.fmt]());
+});
+
+editorsBox.addEventListener('input', e => {
+  const doc = e.target.doc;
+  if (!doc) return;
+  if (doc === active) render();
+  scheduleSave(doc);
+});
+
+editorsBox.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.shiftKey && !e.altKey) {
+    const map = { b: 'b', i: 'i', k: 'link' };
+    if (map[e.key]) { e.preventDefault(); return formats[map[e.key]](); }
+  }
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const { selectionStart: s, selectionEnd: en, value } = editor;
+    if (value.slice(s, en).includes('\n') || e.shiftKey) {
+      // Indent / outdent selected lines
+      const ls = value.lastIndexOf('\n', s - 1) + 1;
+      let le = value.indexOf('\n', en); if (le === -1) le = value.length;
+      const block = value.slice(ls, le).split('\n')
+        .map(l => e.shiftKey ? l.replace(/^ {1,2}/, '') : '  ' + l).join('\n');
+      editor.setSelectionRange(ls, le);
+      insert(block);
+      editor.setSelectionRange(ls, ls + block.length);
+    } else {
+      insert('  ');
+    }
+  }
+  if (e.key === 'Enter' && !mod && !e.shiftKey && !e.isComposing) {
+    // Continue lists automatically
+    const { selectionStart: s, value } = editor;
+    const line = value.slice(value.lastIndexOf('\n', s - 1) + 1, s);
+    const m = line.match(/^(\s*)([-*+]|\d+[.)])(\s+\[[ xX]\])?\s+/);
+    if (!m) return;
+    e.preventDefault();
+    if (line.trim() === m[0].trim()) {
+      // Empty list item: end the list
+      editor.setSelectionRange(s - line.length, s);
+      insert('');
+      return;
+    }
+    let bullet = m[2];
+    if (/^\d/.test(bullet)) bullet = (parseInt(bullet) + 1) + bullet.slice(-1);
+    insert('\n' + m[1] + bullet + (m[3] ? ' [ ]' : '') + ' ');
+  }
+});
+
+/* ---------- Global shortcuts ---------- */
+document.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
+  if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); }
+  // Alt-based tab shortcuts (browser keeps ⌘/Ctrl+T/W for itself); e.code works with Option on macOS
+  if (e.altKey && !mod) {
+    const i = docs.indexOf(active);
+    if (e.code === 'KeyN') { e.preventDefault(); newDoc(); }
+    else if (e.code === 'KeyW') { e.preventDefault(); closeDoc(active); }
+    else if (e.code === 'ArrowRight' && docs.length > 1) { e.preventDefault(); switchTo(docs[(i + 1) % docs.length]); }
+    else if (e.code === 'ArrowLeft' && docs.length > 1) { e.preventDefault(); switchTo(docs[(i - 1 + docs.length) % docs.length]); }
+  }
+});
+
+/* ---------- Scroll sync ---------- */
+let syncing = null;
+function syncScroll(from, to) {
+  if (syncing && syncing !== from) return;
+  syncing = from;
+  const max = from.scrollHeight - from.clientHeight;
+  const ratio = max > 0 ? from.scrollTop / max : 0;
+  to.scrollTop = ratio * (to.scrollHeight - to.clientHeight);
+  clearTimeout(syncScroll.t);
+  syncScroll.t = setTimeout(() => syncing = null, 80);
+}
+editorsBox.addEventListener('scroll', e => { if (e.target === editor) syncScroll(editor, previewBox); }, true);
+previewBox.addEventListener('scroll', () => syncScroll(previewBox, editor));
+
+/* ---------- View mode ---------- */
+function setView(v) {
+  document.body.dataset.view = v;
+  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === v));
+  store.set(KEY.view, v);
+}
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => setView(b.dataset.view));
+
+/* ---------- Resizable split ---------- */
+const divider = $('#divider'), main = $('main');
+function setSplit(pct) {
+  pct = Math.min(80, Math.max(20, pct));
+  document.documentElement.style.setProperty('--split', pct + '%');
+  store.set(KEY.split, pct);
+}
+divider.addEventListener('pointerdown', e => {
+  divider.setPointerCapture(e.pointerId);
+  document.body.classList.add('resizing');
+  const rect = main.getBoundingClientRect();
+  const move = ev => setSplit((ev.clientX - rect.left) / rect.width * 100);
+  const up = () => {
+    document.body.classList.remove('resizing');
+    divider.removeEventListener('pointermove', move);
+    divider.removeEventListener('pointerup', up);
+  };
+  divider.addEventListener('pointermove', move);
+  divider.addEventListener('pointerup', up);
+});
+divider.addEventListener('dblclick', () => setSplit(50));
+
+/* ---------- Theme ---------- */
+function applyTheme(t) {
+  if (t) document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.dataset.theme
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  store.set(KEY.theme, next);
+};
+
+/* ---------- Drag & drop ---------- */
+let dragDepth = 0;
+const isFileDrag = e => [...(e.dataTransfer?.types || [])].includes('Files');
+window.addEventListener('dragenter', e => { if (isFileDrag(e)) { dragDepth++; document.body.classList.add('dragging'); } });
+window.addEventListener('dragleave', e => { if (isFileDrag(e) && --dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+window.addEventListener('dragover', e => { if (isFileDrag(e)) e.preventDefault(); });
+window.addEventListener('drop', async e => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  // DataTransfer items must be read synchronously inside the drop event
+  const items = [...e.dataTransfer.items].filter(i => i.kind === 'file')
+    .map(i => ({ file: i.getAsFile(), handle: i.getAsFileSystemHandle?.() }));
+  const files = [];
+  for (const { file, handle } of items) {
+    if (!file) continue;
+    let h = null;
+    if (bridge) {
+      const path = bridge.pathForFile(file);
+      if (path) h = desktopHandle(path);
+    } else {
+      try { h = await handle; } catch {}
+    }
+    if (h && h.kind !== 'file') continue; // skip folders
+    files.push({ text: await file.text(), name: file.name, handle: h });
+  }
+  if (files.length) await openDocs(files);
+});
+
+/* ---------- Boot ---------- */
+(async function init() {
+  applyTheme(store.get(KEY.theme));
+  setView(store.get(KEY.view) || 'split');
+  const split = parseFloat(store.get(KEY.split));
+  if (split) setSplit(split);
+
+  let saved = [];
+  try { saved = JSON.parse(store.get(KEY.tabs)) || []; } catch {}
+
+  if (saved.length) {
+    for (const t of saved) {
+      const doc = createDoc({ id: t.id, name: t.name, text: store.get(KEY.doc(t.id)) ?? '' });
+      doc.ta.setSelectionRange(0, 0);
+    }
+  } else {
+    // First run, or migrate the single document from the previous version
+    const legacy = store.get(KEY.legacyText);
+    const doc = createDoc({
+      name: store.get(KEY.legacyName) || (legacy == null ? 'welcome.md' : 'untitled.md'),
+      text: legacy ?? WELCOME,
+    });
+    doc.ta.setSelectionRange(0, 0);
+    store.del(KEY.legacyText);
+    store.del(KEY.legacyName);
+    if (canFS) {
+      // Old single-document version kept its file handle under 'handle'
+      idb.get('handle').then(v => {
+        const h = handleFromStore(v);
+        if (h && h.name === doc.name && !doc.handle) { setHandle(doc, h); restoreLink(doc, h); }
+        idb.del('handle');
+      });
+    }
+  }
+
+  // Show the editor right away; reconnecting file handles happens afterwards
+  switchTo(docs.find(d => d.id === store.get(KEY.active)) || docs[0]);
+  persistTabs();
+
+  if (bridge) connectDesktop();
+
+  if (canFS) {
+    for (const doc of docs) {
+      const h = handleFromStore(await idb.get('handle:' + doc.id));
+      if (h && docs.includes(doc) && !doc.handle) restoreLink(doc, h);
+    }
+  }
+})();
+
+/* ---------- Desktop app (Electron) ---------- */
+function connectDesktop() {
+  // Files opened from Finder / Explorer: double-click, "Open with", or dropped on the app icon
+  bridge.onOpenPaths(openPaths);
+  bridge.onMenu(cmd => {
+    const i = docs.indexOf(active);
+    const actions = {
+      new: newDoc, open: openFile, save: saveFile, close: () => closeDoc(active),
+      next: () => switchTo(docs[(i + 1) % docs.length]),
+      prev: () => switchTo(docs[(i - 1 + docs.length) % docs.length]),
+    };
+    actions[cmd]?.();
+  });
+  // Main process asks for this before the window closes, so pending autosaves reach the disk
+  bridge.onFlush(() => Promise.all(docs.filter(d => d.saveTimer).map(d => {
+    clearTimeout(d.saveTimer);
+    return autosave(d);
+  })));
+}
+
+async function openPaths(paths) {
+  const files = [];
+  for (const path of paths) {
+    const h = desktopHandle(path);
+    try {
+      files.push({ text: await (await h.getFile()).text(), name: h.name, handle: h });
+    } catch (err) {
+      console.error(err);
+      toast(`เปิด ${h.name} ไม่สำเร็จ`);
+    }
+  }
+  if (files.length) await openDocs(files);
+}
+
+async function restoreLink(doc, h) {
+  doc.handle = h;
+  doc.needPerm = (await h.queryPermission(RW)) !== 'granted';
+  if (doc.needPerm) setStatus(doc, 'local', 'บันทึกในเบราว์เซอร์แล้ว ·');
+  else setStatus(doc, 'ok', 'เชื่อมกับไฟล์ · บันทึกอัตโนมัติ');
+  renderTabs();
+}
+</script>
+</body>
+</html>

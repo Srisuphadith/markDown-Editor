@@ -1,0 +1,8 @@
+services:
+  markdown-editor:
+    build: .
+    image: markdown-editor:latest
+    container_name: markdown-editor
+    ports:
+      - "${PORT:-8080}:80"
+    restart: unless-stopped
